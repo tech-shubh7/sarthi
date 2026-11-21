@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,24 @@ log = logging.getLogger(__name__)
 
 MAX_PER_CHANNEL = 200
 SESSION_FILE = "telegram"  # Telethon adds ".session"
+
+
+_USERNAME = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,31}")
+_LINK = re.compile(
+    r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/(?:s/)?(?P<name>[^/?#\s]+)/?(?:[?#].*)?$", re.I
+)
+
+
+def channel_username(value: str) -> str | None:
+    """``"jobs_channel"`` from ``@jobs_channel``, ``jobs_channel`` or a public t.me link; None otherwise.
+
+    Private invite links (``t.me/+abc``, ``t.me/joinchat/...``) are not usernames and cannot be read this way.
+    """
+    text = value.strip()
+    if found := _LINK.match(text):
+        text = found["name"]
+    text = text.removeprefix("@")
+    return text if _USERNAME.fullmatch(text) else None
 
 
 def protect(session: Path) -> None:
@@ -63,8 +82,13 @@ class ChannelSource:
         ai: AiClient | None = None,
         clock: Clock = utcnow,
     ) -> None:
-        """Read ``channels`` (usernames like ``@jobs_channel`` or invite-free public links)."""
-        self.channels = [c.strip().removeprefix("https://t.me/").lstrip("@") for c in channels if c.strip()]
+        """Read ``channels`` (usernames like ``@jobs_channel`` or public links like ``t.me/jobs_channel``)."""
+        self.channels: list[str] = []
+        for value in channels:
+            if (username := channel_username(value)) is None:
+                log.warning("telegram channel %r skipped: use @name or https://t.me/name", value[:80])
+            elif username not in self.channels:
+                self.channels.append(username)
         self.api_id, self.api_hash, self.session = api_id, api_hash, session
         self.ai = ai
         self._clock = clock
@@ -94,6 +118,7 @@ class ChannelSource:
                             message_text(message),
                             source="telegram",
                             posted_at=message.date,
+                            fallback_url=f"https://t.me/{channel}/{message.id}",  # "email your CV" posts
                             ai=self.ai,
                             post_id=f"{channel}/{message.id}",
                         )

@@ -34,6 +34,7 @@ from sarthi.db.matches import MatchStore
 from sarthi.db.replies import ReplyStore
 from sarthi.db.source_state import SourceStateStore
 from sarthi.db.tasks import TaskRecord, TaskStore
+from sarthi.db.watched import WatchStore
 from sarthi.documents.handler import DocumentMaker
 from sarthi.matching.handler import LOGIC_VERSION, Matcher, match_version
 from sarthi.profile.master import load_master, master_path
@@ -43,8 +44,10 @@ from sarthi.profile.store import load_profile, profile_path, save_profile
 from sarthi.queue import names
 from sarthi.queue.tasks import PermanentError, Priority, RetryableError, TaskQueue
 from sarthi.queue.worker import Handler, Worker
+from sarthi.sources.channels import SESSION_FILE as CHANNEL_SESSION
+from sarthi.sources.channels import ChannelSource
 from sarthi.sources.ingest import Ingestor
-from sarthi.sources.schedule import SourceScheduler, plan_sources
+from sarthi.sources.schedule import Planned, SourceScheduler, plan_sources, plan_watched
 from sarthi.tracking.handler import Mailbox, ReplyTracker
 
 log = logging.getLogger(__name__)
@@ -278,6 +281,7 @@ def build(settings: Settings, clock: Clock = utcnow) -> App:
     queue = TaskQueue(TaskStore(conn, clock=clock), clock=clock)
     jobs, matches = JobStore(conn, clock=clock), MatchStore(conn, clock=clock)
     chats, states = ChatStore(conn, clock=clock), SourceStateStore(conn, clock=clock)
+    watches = WatchStore(conn, clock=clock)
     fast, quality = (
         _ai(settings, settings.llm_fast_models, conn, clock),
         _ai(settings, settings.llm_quality_models, conn, clock),
@@ -311,6 +315,7 @@ def build(settings: Settings, clock: Clock = utcnow) -> App:
         documents=DocumentStore(conn, clock=clock),
         answers=AnswerStore(conn, clock=clock),
         applications=ApplicationStore(conn, clock=clock),
+        watched=watches,
         data_dir=settings.data_dir,
         clock=clock,
     )
@@ -321,16 +326,45 @@ def build(settings: Settings, clock: Clock = utcnow) -> App:
     matcher = Matcher(
         jobs, matches, queue, profile, ai=LlmMatchScorer(matching_ai), ai_paused=chat_busy, clock=clock
     )
+    companies_every = timedelta(minutes=settings.companies_every_minutes)
     planned = plan_sources(
         settings.job_boards,
         settings.watch_companies,
         timedelta(minutes=settings.boards_every_minutes),
-        timedelta(minutes=settings.companies_every_minutes),
+        companies_every,
         feeds=settings.feeds,
         feeds_every=timedelta(minutes=settings.feeds_every_minutes),
         freehire=settings.freehire,
     )
-    sources = SourceScheduler(planned, Ingestor(jobs, queue, states), states, queue, profile, clock=clock)
+    if settings.channels_enabled and settings.telegram_api_id and settings.telegram_api_hash:
+        channels = ChannelSource(
+            settings.telegram_channels,
+            settings.telegram_api_id,
+            settings.telegram_api_hash.get_secret_value(),
+            settings.data_dir / CHANNEL_SESSION,
+            ai=matching_ai,  # posts the rules cannot read: background work, cloud models only
+            clock=clock,
+        )
+        planned.append(Planned(channels, "feed", timedelta(minutes=settings.channels_every_minutes)))
+
+    def watched_sources() -> list[Planned]:
+        return plan_watched(
+            watches.all(),
+            watches,
+            companies_every=companies_every,
+            pages_every=timedelta(minutes=settings.pages_every_minutes),
+            ai=matching_ai,
+        )
+
+    sources = SourceScheduler(
+        planned,
+        Ingestor(jobs, queue, states),
+        states,
+        queue,
+        profile,
+        watched=watched_sources,
+        clock=clock,
+    )
     documents = DocumentMaker(
         jobs,
         DocumentStore(conn, clock=clock),

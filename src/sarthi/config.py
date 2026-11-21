@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     )
     feeds_every_minutes: int = Field(default=60, ge=15)
     freehire: bool = Field(default=True, description="Search Freehire (~90 hiring systems) for your roles.")
+    pages_every_minutes: int = Field(default=60, ge=15, description="Pages added with /watch.")
+
+    # Telegram job channels, read with your own account (read-only): get an API id and hash at
+    # https://my.telegram.org, then run `uv run sarthi login telegram` once.
+    telegram_api_id: int | None = None
+    telegram_api_hash: SecretStr | None = None
+    telegram_channels: list[str] = Field(default=[], description="Channel usernames, e.g. @jobs_channel.")
+    channels_every_minutes: int = Field(default=30, ge=10)
+
+    @property
+    def channels_enabled(self) -> bool:
+        """True when channels are listed and the Telegram API id and hash are set."""
+        return bool(self.telegram_channels and self.telegram_api_id and self.telegram_api_hash)
 
     # Applying: forms are filled in a browser without a window; nothing is submitted without your approval.
     apply_headless: bool = True

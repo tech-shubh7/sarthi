@@ -8,11 +8,15 @@ Apache-2.0), and is never shown as markup.
 
 from __future__ import annotations
 
+import asyncio
 import html
+import ipaddress
 import re
+import socket
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -36,13 +40,55 @@ _CONTROL = re.compile("[\x00-\x08\x0b-\x1f\x7f\u202a-\u202e\u2066-\u2069\u200b-\
 _SPACES = re.compile("[ \t\u00a0]+")
 
 
-def client(transport: httpx.AsyncBaseTransport | None = None) -> httpx.AsyncClient:
-    """An HTTP client for public feeds: no redirects to other hosts are followed blindly, short timeout."""
+async def resolve_host(host: str, port: int) -> list[str]:
+    """Every IP address ``host`` resolves to (replaced in tests)."""
+    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    return [str(info[4][0]) for info in infos]
+
+
+async def check_public_url(url: str) -> None:
+    """Refuse a link that is not a public web address (the SSRF guard, docs/STANDARDS.md §4).
+
+    Only http(s), no login inside the link, and every address the host resolves to must be public: never
+    this computer, the home network, or cloud metadata. Raises ``PermanentError`` (or ``RetryableError``
+    when the name cannot be looked up right now).
+    """
+    try:
+        parts = urlsplit(url)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError as error:
+        raise PermanentError("not a valid link") from error
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise PermanentError("only http and https links can be watched")
+    if parts.username or parts.password:
+        raise PermanentError("links with a login inside them are not allowed")
+    try:
+        addresses = await resolve_host(parts.hostname, port)
+    except OSError as error:
+        raise RetryableError(f"{parts.hostname}: name not found") from error
+    for address in addresses:
+        if not ipaddress.ip_address(address.split("%", 1)[0]).is_global:
+            raise PermanentError(f"{parts.hostname} points to a private or local address")
+
+
+async def _public_only(request: httpx.Request) -> None:
+    await check_public_url(str(request.url))
+
+
+def client(
+    transport: httpx.AsyncBaseTransport | None = None, *, public_only: bool = False
+) -> httpx.AsyncClient:
+    """An HTTP client for public feeds, short timeout.
+
+    ``public_only`` checks every request, redirects included, with ``check_public_url``: use it for any link a
+    person or a post supplied.
+    """
     return httpx.AsyncClient(
         timeout=TIMEOUT_S,
         follow_redirects=True,
         headers={"User-Agent": USER_AGENT, "Accept": "application/json, application/rss+xml, */*"},
         transport=transport,
+        event_hooks={"request": [_public_only]} if public_only else None,
     )
 
 

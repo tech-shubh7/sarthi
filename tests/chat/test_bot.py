@@ -288,7 +288,19 @@ async def test_poll_sets_the_slash_command_menu(bot: TelegramBot, api: FakeApi) 
     bot.stop()
     await bot.poll()
     names = [name for name, _ in api.commands]
-    assert names == ["setup", "profile", "today", "catchup", "status", "pause", "resume", "cancel", "help"]
+    assert names == [
+        "setup",
+        "profile",
+        "today",
+        "catchup",
+        "watch",
+        "watching",
+        "status",
+        "pause",
+        "resume",
+        "cancel",
+        "help",
+    ]
     assert all(
         n.islower() and 1 <= len(n) <= 32 and len(d) <= 256 for n, d in api.commands
     )  # Telegram's limits

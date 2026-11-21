@@ -17,6 +17,8 @@ from sarthi.config import get_settings
 from sarthi.db.chat import ChatStore
 from sarthi.db.connection import connect
 from sarthi.log import setup_logging
+from sarthi.sources.channels import SESSION_FILE as CHANNEL_SESSION
+from sarthi.sources.channels import login as telegram_login
 
 app = typer.Typer(help="Sarthi: finds, matches and applies to jobs for you.", no_args_is_help=True)
 
@@ -87,15 +89,19 @@ def catchup(
 
 
 @app.command()
-def login(site: str = typer.Argument(..., help="linkedin or naukri")) -> None:
-    """Log in once to a job site in a browser window, so Sarthi can apply there with your account.
+def login(site: str = typer.Argument(..., help="linkedin, naukri or telegram")) -> None:
+    """Log in once so Sarthi can use your account: apply on a job site, or read Telegram job channels.
 
     You type your password into the site itself; Sarthi never sees it. Stop `sarthi run` first (the saved
     browser profile can be used by one program at a time).
     """
     site = site.strip().lower()
+    if site == "telegram":
+        _login_telegram()
+        return
     if site not in LOGIN_PAGES:
-        typer.echo(f"Unknown site {site!r}. Choose one of: {', '.join(LOGIN_PAGES)}", err=True)
+        choices = ", ".join((*LOGIN_PAGES, "telegram"))
+        typer.echo(f"Unknown site {site!r}. Choose one of: {choices}", err=True)
         raise typer.Exit(code=2)
     settings = get_settings()
     typer.echo(f"A browser window is opening. Log in to {site} there; it closes by itself once you're in.")
@@ -103,3 +109,24 @@ def login(site: str = typer.Argument(..., help="linkedin or naukri")) -> None:
     typer.echo(
         "Logged in: Sarthi can now apply there." if done else "Not logged in (window closed or timed out)."
     )
+
+
+def _login_telegram() -> None:
+    """Log in to Telegram in the terminal (phone number, then the code Telegram sends)."""
+    settings = get_settings()
+    if not settings.telegram_api_id or settings.telegram_api_hash is None:
+        typer.echo(
+            "Set SARTHI_TELEGRAM_API_ID and SARTHI_TELEGRAM_API_HASH in .env first "
+            "(create them at https://my.telegram.org under 'API development tools').",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.echo("Logging in to Telegram. Sarthi only reads the channels you list; it never posts or joins.")
+    name = asyncio.run(
+        telegram_login(
+            settings.telegram_api_id,
+            settings.telegram_api_hash.get_secret_value(),
+            settings.data_dir / CHANNEL_SESSION,
+        )
+    )
+    typer.echo(f"Logged in as {name}. Add channels to SARTHI_TELEGRAM_CHANNELS, then run: uv run sarthi run")

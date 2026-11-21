@@ -10,6 +10,7 @@ from sarthi.clock import Clock, to_iso, utcnow
 from sarthi.db.connection import transaction
 
 MAX_WATCHED = 500
+MAX_TEXT = 500
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,10 +41,10 @@ class WatchStore:
                 "INSERT OR IGNORE INTO watched (url, kind, system, slug, name, added_at)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
                 (
-                    item.url[:500],
+                    item.url[:MAX_TEXT],
                     item.kind,
                     item.system,
-                    item.slug[:200],
+                    item.slug[:MAX_TEXT],  # Workday and iCIMS slugs are whole links
                     item.name[:200],
                     to_iso(self._clock()),
                 ),

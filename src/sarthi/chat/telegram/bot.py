@@ -26,6 +26,7 @@ from sarthi.chat.setup import WHY, SetupFlow
 from sarthi.chat.telegram.api import Markup, TelegramApi, buttons
 from sarthi.chat.tracking import followup_text, reply_text
 from sarthi.chat.understand import Route, route, route_by_rules
+from sarthi.chat.watching import WatchCommands
 from sarthi.clock import Clock, utcnow
 from sarthi.db.answers import AnswerStore
 from sarthi.db.applications import ApplicationStore
@@ -34,6 +35,7 @@ from sarthi.db.documents import DocumentStore
 from sarthi.db.jobs import JobStore
 from sarthi.db.matches import MatchStore
 from sarthi.db.tasks import TaskRecord
+from sarthi.db.watched import WatchStore
 from sarthi.queue import names
 from sarthi.queue.tasks import DeferError, PermanentError, Priority, RetryableError, TaskQueue
 
@@ -97,6 +99,8 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("profile", "Show your profile (change anything by just telling me)"),
     ("today", "Best matches you have not seen yet"),
     ("catchup", "Everything posted in the last 24 hours to 7 days, in one batch"),
+    ("watch", "Watch a careers page or hiring link for new jobs"),
+    ("watching", "Links you watch (stop one with /unwatch)"),
     ("status", "What Sarthi has found so far"),
     ("pause", "Stop instant alerts (matches wait for you)"),
     ("resume", "Start instant alerts again"),
@@ -151,10 +155,12 @@ class TelegramBot:
         documents: DocumentStore | None = None,
         answers: AnswerStore | None = None,
         applications: ApplicationStore | None = None,
+        watched: WatchStore | None = None,
         data_dir: Path | None = None,
         clock: Clock = utcnow,
     ) -> None:
         """Send with ``api``; read jobs and matches; record choices in ``chats``; queue applications."""
+        self.watching = WatchCommands(api, watched) if watched is not None else None
         self.setup = setup
         self.inbox = Inbox(self._handle_batch, self._busy_notice) if group_messages else None
         self.api = api
@@ -333,8 +339,24 @@ class TelegramBot:
             else:
                 await self._handle_batch(chat_id, [message])
             return
+        if await self._on_watch_command(chat_id, command, argument):
+            return
         if not await self._on_setup_command(chat_id, command):
             await self._on_command(chat_id, command)
+
+    async def _on_watch_command(self, chat_id: int, command: str, argument: str) -> bool:
+        """/watch <link>, /unwatch <link or number>, /watching. True when handled here."""
+        if self.watching is None:
+            return False
+        if command == "/watch":
+            await self.watching.watch(chat_id, argument)
+        elif command == "/unwatch":
+            await self.watching.unwatch(chat_id, argument)
+        elif command == "/watching":
+            await self.watching.show(chat_id)
+        else:
+            return False
+        return True
 
     async def _on_command(self, chat_id: int, command: str) -> None:
         """/help, /status, /pause, /resume, /today."""

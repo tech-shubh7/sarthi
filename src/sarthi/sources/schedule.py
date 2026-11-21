@@ -14,9 +14,11 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from sarthi.ai.client import AiClient
 from sarthi.clock import Clock, from_iso, utcnow
 from sarthi.db.source_state import SourceState, SourceStateStore
 from sarthi.db.tasks import TaskRecord
+from sarthi.db.watched import Watched, WatchStore
 from sarthi.profile.models import Profile, RemotePreference
 from sarthi.queue import names
 from sarthi.queue.tasks import PermanentError, Priority, RetryableError, TaskQueue
@@ -27,6 +29,7 @@ from sarthi.sources.feeds import FEEDS, FeedSource
 from sarthi.sources.freehire import FreehireSource
 from sarthi.sources.hackernews import HackerNewsSource
 from sarthi.sources.ingest import Ingestor
+from sarthi.sources.pages import PageSource
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +82,24 @@ def plan_sources(  # noqa: PLR0913  (one argument per source group)
     return planned
 
 
+def plan_watched(
+    items: Sequence[Watched],
+    store: WatchStore,
+    *,
+    companies_every: timedelta,
+    pages_every: timedelta,
+    ai: AiClient | None = None,
+) -> list[Planned]:
+    """What the user added with /watch: company boards on a known hiring system, and plain pages."""
+    planned: list[Planned] = []
+    for item in items:
+        if item.kind == "board":
+            planned.append(Planned(CompanyBoardSource(item.system, item.slug), "company", companies_every))
+        else:
+            planned.append(Planned(PageSource(item.url, item.name, store, ai=ai), "company", pages_every))
+    return planned
+
+
 def look_back_hours(kind: str, state: SourceState | None, now: datetime) -> int:
     """Hours to search back: since the last successful read (plus a margin), or a first-run window."""
     if state is None or state.last_ok_at is None:
@@ -117,10 +138,14 @@ class SourceScheduler:
         queue: TaskQueue,
         load_profile: Callable[[], Profile | None],
         *,
+        watched: Callable[[], list[Planned]] = list,
         clock: Clock = utcnow,
     ) -> None:
-        """Watch ``planned`` sources, storing jobs through ``ingestor``."""
-        self.planned = {p.source.name: p for p in planned}
+        """Watch ``planned`` sources and ``watched()`` (re-read every tick); store jobs via ``ingestor``."""
+        self._fixed = {p.source.name: p for p in planned}
+        self._watched = watched
+        self.planned: dict[str, Planned] = {}
+        self.refresh()
         self.ingestor = ingestor
         self.states = states
         self.queue = queue
@@ -133,6 +158,10 @@ class SourceScheduler:
         """The user's current profile, or None before setup."""
         return self._load_profile()
 
+    def refresh(self) -> None:
+        """Pick up links added or removed with /watch since the last tick (configured sources win a clash)."""
+        self.planned = {**{p.source.name: p for p in self._watched()}, **self._fixed}
+
     def _due(self, planned: Planned, state: SourceState | None, now: datetime) -> bool:
         if state is None or state.last_checked_at is None:
             return True
@@ -142,6 +171,7 @@ class SourceScheduler:
 
     def tick(self) -> int:
         """Queue every source that is due. Returns how many were queued."""
+        self.refresh()
         now = self._clock()
         profile = self._load_profile()
         changed = profile is not None and profile.version != self._profile_version
