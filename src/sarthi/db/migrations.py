@@ -181,6 +181,23 @@ MIGRATIONS: tuple[str, ...] = (
     ALTER TABLE application ADD COLUMN reminders INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE application ADD COLUMN reminded_at TEXT;
     """,
+    # 10: pages and career links the user asked Sarthi to watch, and what each watched page last said
+    """
+    CREATE TABLE watched (
+        url                  TEXT PRIMARY KEY,
+        kind                 TEXT NOT NULL CHECK (kind IN ('board', 'page')),
+        system               TEXT NOT NULL DEFAULT '',  -- for boards: the hiring system (greenhouse, ...)
+        slug                 TEXT NOT NULL DEFAULT '',  -- for boards: the company on that system
+        name                 TEXT NOT NULL DEFAULT '',
+        added_at             TEXT NOT NULL
+    ) STRICT;
+
+    CREATE TABLE page_text (
+        url                  TEXT PRIMARY KEY,
+        text_zlib            BLOB NOT NULL,
+        read_at              TEXT NOT NULL
+    ) STRICT;
+    """,
 )
 
 

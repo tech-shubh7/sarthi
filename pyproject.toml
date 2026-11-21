@@ -14,6 +14,7 @@ dependencies = [
     "pydantic-settings>=2.6",
     "pypdf>=6.1",
     "python-jobspy>=1.4.1,<1.5",
+    "telethon>=1.36",
     "typer>=0.12",
     "typst>=0.15,<0.16",
 ]
@@ -77,6 +78,7 @@ ignore = ["D203", "D213", "TRY003"]
 "src/sarthi/jobs/{geo,countries,forms}.py" = ["E501", "RUF001"]
 "src/sarthi/answers/questions.py" = ["E501"]
 "src/sarthi/tracking/{triage,matcher}.py" = ["E501"]
+"src/sarthi/sources/posts.py" = ["E501", "RUF001"]
 # Messages to people use typographic dashes and emoji on purpose.
 "src/sarthi/chat/**" = ["RUF001"]
 
@@ -89,6 +91,10 @@ python_version = "3.12"
 strict = true
 mypy_path = "src"
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["telethon", "telethon.*"]
+ignore_missing_imports = true
 
 # ---------- Tests ----------
 [tool.pytest.ini_options]
