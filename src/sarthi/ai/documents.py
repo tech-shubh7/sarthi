@@ -89,24 +89,30 @@ class TailorAnswer(BaseModel):
 
 TAILOR_PROMPT = Prompt(
     name="tailor_resume",
-    version="1",
+    version="2",
     instructions="""
-Tailor the candidate's resume to the job. You may only re-word and re-order what <resume_sections> already
-says. Never add a skill, tool, employer, number, metric, team size or result that is not in it.
+Tailor the candidate's resume to the job, the way a careful human editor would. You may only re-word and
+re-order what <resume_sections> already says. Never add a skill, tool, employer, number, metric, team size or
+result that is not in it.
 
 Return JSON:
-- "headline": a short line (max 10 words) naming the target role and 2-3 of the candidate's real skills
-- "summary": 2-3 sentences, plain and factual, for this job; each claim from one resume line, never
-  combining details of different bullets
-- "experience": for each position, {"index": <its number>, "bullets": [...]} with its bullets re-worded
-  so the ones most relevant to the job come first and use the job's words where the meaning is the same;
-  keep every number exactly; at most 6 bullets per position; drop bullets unrelated to the job only if the
-  position has more than 4
+- "headline": a short line (max 8 words) naming the target role and 2-3 of the candidate's real skills,
+  e.g. "Backend Engineer | Python, Node.js, RAG"
+- "summary": at most 2 sentences and 45 words. Say what kind of engineer they are, the skills this job cares
+  about most, and ONE standout result. Do not copy a bullet; the bullets already say the details. Each claim
+  from one resume line, never combining details of different bullets. No "I", no "seeking", no buzzwords.
+- "experience": for each position, {"index": <its number>, "bullets": [...]}: the bullets most relevant to
+  the job first, re-worded to use the job's own words where the meaning is the same. Each bullet: starts with
+  a plain past-tense verb (built, cut, wrote, moved, designed), one idea, about 25 words at most, the result
+  last; keep every number exactly as written; at most 5 bullets per position; drop bullets unrelated to the
+  job only if the position has more than 4.
 - "project_order": project numbers, most relevant first (leave out unrelated ones)
 - "skills_first": the candidate's skills that the job asks for, most important first (copy names exactly)
 
-Style: plain verbs (built, cut, wrote, ran). No em dashes. Never use: passionate, leverage, spearheaded,
-robust, cutting-edge, seamless, synergy, results-driven, detail-oriented, proven track record.
+Write like a person, not a template: concrete nouns, short words, no filler ("various", "multiple",
+"responsible for", "worked on" when "built" is true). No em dashes. Never use: passionate, leverage,
+spearheaded, robust, cutting-edge, seamless, synergy, results-driven, detail-oriented, proven track record,
+dynamic, innovative, utilize.
 """,
 )
 
@@ -162,20 +168,25 @@ class CoverAnswer(BaseModel):
 
 COVER_PROMPT = Prompt(
     name="cover_letter",
-    version="1",
+    version="2",
     instructions="""
-Write the body of a short cover letter (3 paragraphs, 150-230 words in total) from the candidate to the
-company in <job_posting>, using only facts in <resume_sections>.
+Write the body of a short cover letter (3 paragraphs, 170-240 words in total) in the candidate's own voice,
+to the company in <job_posting>, using only facts in <resume_sections>. It should read like a capable person
+wrote it themselves for this one job: first person, warm but direct, sentences of different lengths, no
+template phrases.
 
-1. Which role, and the one or two facts from the resume that fit it best.
-2. What they built that matches the job's needs; keep every number exactly as written; add no new numbers,
-   tools or results. Each claim must come from ONE resume line: never combine details of different
-   bullets, projects or jobs into one sentence, and never give the candidate a title they did not hold.
-3. One plain closing sentence asking for a conversation.
+1. Name the role and open with the one thing from the resume that fits this job best, said plainly.
+2. Pick one or two specific needs the job posting states and, for each, what the candidate built that
+   answers it (from the resume). Keep every number exactly as written; add no new numbers, tools or results.
+   Each claim must come from ONE resume line: never combine details of different bullets, projects or jobs,
+   and never give the candidate a title they did not hold.
+3. One or two sentences: what they would like to work on there (from the posting) and a plain request for a
+   conversation.
 
-No greeting, no signature, no subject line. Plain words. No em dashes. Never use: passionate, thrilled,
-excited to apply, leverage, align with, demonstrate, resonate, synergy, I believe, I am confident,
-furthermore, additionally, moreover.
+No greeting, no signature, no subject line, no praise of the company ("industry leader", "renowned"). No em
+dashes. Never use: passionate, thrilled, excited to apply, leverage, align with, demonstrate, resonate,
+synergy, I believe, I am confident, furthermore, additionally, moreover, dynamic, innovative, esteemed,
+I am writing to.
 """,
 )
 

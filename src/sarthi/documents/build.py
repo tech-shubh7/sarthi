@@ -151,18 +151,40 @@ class Letter:
         return "\n\n".join([self.greeting, *self.paragraphs, self.sign_off])
 
 
+MIN_LETTER_PARAGRAPHS = 2
+
+
+def _as_clause(text: str) -> str:
+    """A resume line read on inside a sentence: 'Built an API.' becomes 'built an API'."""
+    text = text.strip().rstrip(".")
+    return text[:1].lower() + text[1:] if text[:2] != text[:2].upper() else text
+
+
+def _and_list(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
 def plain_letter(master: MasterResume, role: str, company: str) -> list[str]:
-    """A short, true letter built from the resume alone (used when no AI answer passes the checks)."""
+    """A short, true letter built from the resume alone (used only when no AI letter passes the checks)."""
     latest = master.experience[0] if master.experience else None
-    skills = ", ".join(master.all_skills()[:4])
-    opening = f"I am applying for the {role} role at {company}."
+    opening = f"I'd like to apply for the {role} role at {company}."
     if latest:
-        opening += f" I work as {latest.title} at {latest.company}."
-    middle = f"My main skills are {skills}." if skills else ""
-    if latest and latest.bullets:
-        middle = (middle + " " if middle else "") + f"Recently: {latest.bullets[0].rstrip('.')}."
-    closing = "I would welcome a conversation about how I can help your team."
-    return [p for p in (opening, middle, closing) if p]
+        opening += f" I'm currently a {latest.title} at {latest.company}"
+        opening += f", where I {_as_clause(latest.bullets[0])}." if latest.bullets else "."
+    skills = master.all_skills()[:4]
+    middle = f"Most of my day-to-day work is in {_and_list(skills)}." if skills else ""
+    if master.projects and master.projects[0].description:
+        project = master.projects[0]
+        middle += f" Outside work I built {project.name}, which {_lower_rest(project.description)}."
+    closing = f"I'd be glad to talk about how I could help the team at {company}. Thank you for your time."
+    return [p.strip() for p in (opening, middle, closing) if p.strip()]
+
+
+def _lower_rest(description: str) -> str:
+    """A project description read on after "which": "Built a tool that..." -> "is a tool that..."."""
+    text = description.strip().rstrip(".")
+    built = re.match(r"(?i)^(built|created|made|developed|designed)\s+(a|an|the)\s+", text)
+    return f"is {built.group(2).lower()} {text[built.end() :]}" if built else _as_clause(text)
 
 
 def cover_letter(  # noqa: PLR0913  (all the letter's inputs)
@@ -177,16 +199,40 @@ def cover_letter(  # noqa: PLR0913  (all the letter's inputs)
 ) -> Letter:
     """The letter for one job.
 
-    Every paragraph must be true (and, when ``strict``, cliché-free); otherwise the plain letter built from
-    the resume alone is used.
+    A first try must be wholly true; its problems go back to the AI for one more try. On that ``strict`` try
+    the paragraphs that are true and cliché-free are kept when at least two are; only then is the plain letter
+    built from the resume used. A plain letter carries the problems, so the caller can ask again.
     """
-    sign_off = f"Regards,\n{master.name}" if master.name else "Regards,"
+    sign_off = f"Best regards,\n{master.name}" if master.name else "Best regards,"
     greeting = f"Dear {company} hiring team,"
-    if answer is not None:
-        checker = Checker(master, resume_text, own_skills)
-        paragraphs = [_tidy(p) for p in answer.paragraphs if _tidy(p)]
-        facts = [f for p in paragraphs for f in checker.facts(p)]
-        style = [f for p in paragraphs for f in checker.style(p)]
-        if paragraphs and not facts and not (strict and style):
-            return Letter(greeting, paragraphs, sign_off, from_ai=True, problems=style)
-    return Letter(greeting, plain_letter(master, role, company), sign_off, from_ai=False)
+    plain = plain_letter(master, role, company)
+    if answer is None:
+        return Letter(greeting, plain, sign_off, from_ai=False)
+    checker = Checker(master, resume_text, own_skills)
+    paragraphs = [_tidy(p) for p in answer.paragraphs if _tidy(p)]
+    checked = [(p, checker.facts(p), checker.style(p)) for p in paragraphs]
+    facts = [f for _, found, _ in checked for f in found]
+    style = [s for _, _, found in checked for s in found]
+    if strict:
+        kept = [p for p, bad_facts, bad_style in checked if not bad_facts and not bad_style]
+        if len(kept) >= MIN_LETTER_PARAGRAPHS:
+            return Letter(greeting, kept, sign_off, from_ai=True)
+        return Letter(greeting, plain, sign_off, from_ai=False, problems=facts + style)
+    if paragraphs and not facts:
+        return Letter(greeting, paragraphs, sign_off, from_ai=True, problems=style)
+    return Letter(greeting, plain, sign_off, from_ai=False, problems=facts + style)
+
+
+def without_claims(letter: Letter, claims: list[str]) -> Letter | None:
+    """The letter without the paragraphs the reviewer's claims quote.
+
+    None when fewer than two paragraphs would remain, or when a claim cannot be found in any paragraph (it
+    cannot be removed, so the letter cannot be trusted).
+    """
+    quotes = [c.split(" - ")[0].strip(" \"'“”").lower()[:40] for c in claims]
+    if not all(q and any(q in p.lower() for p in letter.paragraphs) for q in quotes):
+        return None
+    kept = [p for p in letter.paragraphs if not any(q in p.lower() for q in quotes)]
+    if len(kept) < MIN_LETTER_PARAGRAPHS:
+        return None
+    return Letter(letter.greeting, kept, letter.sign_off, from_ai=True)

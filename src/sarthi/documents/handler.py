@@ -12,6 +12,7 @@ import hashlib
 import logging
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from sarthi.clock import Clock, utcnow
 from sarthi.db.documents import DocumentRecord, DocumentStore
 from sarthi.db.jobs import JobStore
 from sarthi.db.tasks import TaskRecord
-from sarthi.documents.build import Letter, cover_letter, plain_letter, tailored_resume
+from sarthi.documents.build import Letter, cover_letter, plain_letter, tailored_resume, without_claims
 from sarthi.documents.keywords import keyword_report
 from sarthi.documents.render import (
     RenderError,
@@ -51,10 +52,31 @@ log = logging.getLogger(__name__)
 
 WAIT_FOR_PROFILE_S = 3600
 AI_BUSY_WAIT_S = 90.0  # free AI tiers limit tokens per minute: better documents after a short wait
+BUSY_BACKOFF = 4
 LAST_TRY = MAX_ATTEMPTS  # on the queue's last attempt, the plain fallbacks are accepted
 DOCUMENTS_DIR = "documents"
 NO_RESUME = "Tailored documents need your resume: send /setup and upload it."
 NO_AI = "Tailored documents need an AI model: set SARTHI_LLM_QUALITY_MODELS (see .env.example)."
+
+
+@dataclass(frozen=True, slots=True)
+class Tries:
+    """Which attempt of the task this is; a busy AI is waited for longer each time.
+
+    Free tiers reset per minute, then per day: 90 s, 6 min, 24 min, 1.6 h. The last attempt takes what it can.
+    """
+
+    attempt: int
+
+    @property
+    def last(self) -> bool:
+        """True on the queue's last attempt: the plain fallbacks are accepted."""
+        return self.attempt >= LAST_TRY
+
+    @property
+    def wait(self) -> float:
+        """Seconds to wait before the next attempt when the AI is busy."""
+        return AI_BUSY_WAIT_S * float(BUSY_BACKOFF) ** max(0, self.attempt - 1)
 
 
 def resume_hash(text: str) -> str:
@@ -119,7 +141,7 @@ class DocumentMaker:
         if profile is None:
             raise DeferError(WAIT_FOR_PROFILE_S)
         try:
-            report = await self.make(task.key, profile, last_try=task.attempts >= LAST_TRY)
+            report = await self.make(task.key, profile, tries=Tries(task.attempts))
         except PermanentError as error:
             self._ready(task, {"error": str(error)})
             return
@@ -130,19 +152,18 @@ class DocumentMaker:
             names.DOCUMENTS_READY, task.key, {**task.payload, **result}, priority=Priority.ALERT
         )
 
-    def _busy(self, answer: object, last_try: bool) -> None:
+    def _busy(self, answer: object, tries: Tries) -> None:
         """No AI answer although a model is set up: wait and try again, unless this is the last try."""
-        if answer is None and self.ai.available and not last_try:
-            raise RetryableError(
-                "the AI is busy (rate limit); trying again shortly", retry_after=AI_BUSY_WAIT_S
-            )
+        if answer is None and self.ai.available and not tries.last:
+            raise RetryableError("the AI is busy (rate limit); trying again later", retry_after=tries.wait)
 
-    async def make(self, job_id: str, profile: Profile, *, last_try: bool = True) -> dict[str, Any]:
+    async def make(self, job_id: str, profile: Profile, *, tries: Tries | None = None) -> dict[str, Any]:
         """Write the files and store the record. Returns the report.
 
-        Unless ``last_try``, a missing AI answer raises ``RetryableError`` so the task waits for the AI rather
-        than settling for the untailored resume or the plain letter.
+        Unless this is the last try, a missing AI answer raises ``RetryableError``, so the task waits for the
+        AI rather than settling for the untailored resume or the plain letter. ``tries`` None: a last try.
         """
+        tries = tries or Tries(LAST_TRY)
         job = self.jobs.get(job_id)
         if job is None:
             raise PermanentError("That job is no longer stored.")
@@ -151,15 +172,15 @@ class DocumentMaker:
         skills = profile.skills
 
         answer = await tailor(self.ai, master, job_text)
-        self._busy(answer, last_try)
+        self._busy(answer, tries)
         built = tailored_resume(master, answer, profile.resume_text, skills)
         if built.problems:  # clichés or AI talk: one more try with the problems listed, then strict
             answer = await tailor(self.ai, master, job_text, built.problems[:10]) or answer
             built = tailored_resume(master, answer, profile.resume_text, skills, strict=True)
 
-        built = await self._checked_summary(master, built, job_text, last_try)
+        built = await self._checked_summary(master, built, tries)
         letter = await self._letter(
-            master, profile, role=job.title, company=job.company, job_text=job_text, last_try=last_try
+            master, profile, role=job.title, company=job.company, job_text=job_text, tries=tries
         )
 
         paper = paper_for(profile.preferences.home_country)
@@ -209,18 +230,18 @@ class DocumentMaker:
         )
         return report
 
-    async def _claims(self, master: MasterResume, text: str, last_try: bool) -> list[str]:
+    async def _claims(self, master: MasterResume, text: str, tries: Tries) -> list[str]:
         """The AI reviewer's unsupported claims (waits for a busy AI unless this is the last try)."""
         found = await unsupported_claims(self.ai, master, text)
-        self._busy(found, last_try)
+        self._busy(found, tries)
         return found or []
 
-    async def _checked_summary(self, master: MasterResume, built: Any, job_text: str, last_try: bool) -> Any:
+    async def _checked_summary(self, master: MasterResume, built: Any, tries: Tries) -> Any:
         """The tailored summary, or the master's when the reviewer finds a claim the resume lacks."""
         summary = built.resume.summary
         if summary == master.summary or not summary:
             return built
-        problems = await self._claims(master, summary, last_try)
+        problems = await self._claims(master, summary, tries)
         if problems:
             built.resume = built.resume.model_copy(update={"summary": master.summary})
             built.reverted += [f"summary: {p}" for p in problems[:3]]
@@ -234,13 +255,19 @@ class DocumentMaker:
         role: str,
         company: str,
         job_text: str,
-        last_try: bool,
+        tries: Tries,
     ) -> Letter:
-        """A letter that passes the code checks and the claim reviewer; else the plain letter."""
+        """A letter that passes the code checks and the claim reviewer.
+
+        The first answer's problems (a number or skill the resume lacks, a cliché, a claim the reviewer cannot
+        find) go back to the AI once; from that second answer the true paragraphs are kept. The plain letter
+        is the last resort.
+        """
         problems: list[str] = []
-        for strict in (False, True):  # a first try, then one more with the problems listed, checked strictly
+        letter = Letter("", [], "", from_ai=False)
+        for strict in (False, True):
             answer = await ai_cover_letter(self.ai, master, job_text, problems[:10] or None)
-            self._busy(answer, last_try)
+            self._busy(answer, tries)
             letter = cover_letter(
                 master,
                 answer,
@@ -251,8 +278,18 @@ class DocumentMaker:
                 strict=strict,
             )
             if not letter.from_ai:
-                return letter
-            claims = await self._claims(master, "\n\n".join(letter.paragraphs), last_try)
+                if answer is None or strict:
+                    return letter
+                problems = letter.problems  # untrue on the first try: ask again with what was wrong
+                continue
+            claims = await self._claims(master, "\n\n".join(letter.paragraphs), tries)
+            if strict:
+                if not claims:
+                    return letter
+                trimmed = without_claims(letter, claims)
+                if trimmed is not None:
+                    return trimmed
+                break
             problems = letter.problems + [f"unsupported claim: {c}" for c in claims]
             if not problems:
                 return letter

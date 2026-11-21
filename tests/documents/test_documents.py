@@ -11,7 +11,7 @@ import pytest
 
 from sarthi.ai.documents import CoverAnswer, TailorAnswer, TailoredJob
 from sarthi.chat.document_report import report_text
-from sarthi.documents.build import cover_letter, plain_letter, tailored_resume
+from sarthi.documents.build import cover_letter, plain_letter, tailored_resume, without_claims
 from sarthi.documents.handler import file_stem, resume_hash
 from sarthi.documents.keywords import keyword_report
 from sarthi.documents.render import ats_problems, letter_pdf, paper_for, pdf_text, resume_pdf
@@ -189,6 +189,9 @@ def test_new_numbers_and_skills_are_caught() -> None:
         "Leveraged Redis",
         "Here is the revised resume",
         "As an AI language model",
+        "As an AI, I cannot verify this",
+        "I am an AI and cannot",
+        "as a large language model I",
         "Dear [Company Name]",
         "Fast — reliable",
         "My work aligns with your goals",
@@ -200,6 +203,20 @@ def test_style_problems(text: str) -> None:
 
 def test_plain_text_has_no_style_problems() -> None:
     assert style_problems("Built 12 FastAPI services and cut latency by 40%.") == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # What an AI engineer's own letter says (these sent good letters back as "AI talk").
+        "I'd like to join Gamma as an AI Engineer.",
+        "I have worked as an AI/ML engineer for a year.",
+        "Built a chatbot on large language models with RAG.",
+        "I'm applying as an AI developer on your platform team.",
+    ],
+)
+def test_an_ai_engineer_is_not_an_ai_talking(text: str) -> None:
+    assert style_problems(text) == []
 
 
 # ---- building the tailored resume ----
@@ -289,13 +306,14 @@ def test_true_letter_is_used_with_code_written_greeting_and_sign_off() -> None:
     result = letter(["I am applying for the AI Engineer role.", "At Acme Labs I built 12 FastAPI services."])
     assert result.from_ai
     assert result.greeting == "Dear Gamma hiring team,"
-    assert result.sign_off == "Regards,\nAsha Rao"
+    assert result.sign_off == "Best regards,\nAsha Rao"
 
 
-def test_untrue_letter_becomes_the_plain_one() -> None:
+def test_untrue_letter_becomes_the_plain_one_and_says_why() -> None:
     result = letter(["I led a team of 20.", "I saved $5M."])
     assert not result.from_ai
     assert result.paragraphs == plain_letter(master(), "AI Engineer", "Gamma")
+    assert result.problems  # handed back to the AI for one more try
     assert all(not fact_problems(p, RESUME_TEXT, master().all_skills()) for p in result.paragraphs)
 
 
@@ -304,11 +322,51 @@ def test_cliche_letter_is_retried_then_plain() -> None:
     assert not letter(["I am thrilled to apply.", "I built 12 FastAPI services."], strict=True).from_ai
 
 
+def test_the_second_try_keeps_its_true_paragraphs() -> None:
+    result = letter(
+        [
+            "I'd like to join Gamma as an AI Engineer.",
+            "At Acme Labs I built 12 FastAPI services.",
+            "I saved $5M.",  # not in the resume: dropped, not the whole letter
+        ],
+        strict=True,
+    )
+    assert result.from_ai
+    assert result.paragraphs == [
+        "I'd like to join Gamma as an AI Engineer.",
+        "At Acme Labs I built 12 FastAPI services.",
+    ]
+
+
+def test_reviewer_claims_remove_only_their_paragraphs() -> None:
+    whole = letter(
+        ["Para one about Gamma.", "At Acme Labs I built 12 FastAPI services.", "I led the platform team."]
+    )
+    trimmed = without_claims(whole, ["I led the platform team - no such title in the resume"])
+    assert trimmed is not None
+    assert trimmed.paragraphs == ["Para one about Gamma.", "At Acme Labs I built 12 FastAPI services."]
+    assert without_claims(whole, ["something not in the letter - x"]) is None  # cannot remove it: not trusted
+    assert without_claims(whole, ["Para one - x", "At Acme Labs - y"]) is None  # too little left
+
+
+def test_plain_letter_reads_like_a_person() -> None:
+    text = " ".join(plain_letter(master(), "AI Engineer", "Gamma"))
+    assert text.startswith(
+        "I'd like to apply for the AI Engineer role at Gamma. I'm currently a Software Engineer at Acme Labs, where I "
+    )
+    assert "Recently:" not in text
+    assert "My main skills are" not in text
+    assert all(
+        not fact_problems(p, RESUME_TEXT, master().all_skills())
+        for p in plain_letter(master(), "AI Engineer", "Gamma")
+    )
+
+
 def test_plain_letter_without_experience() -> None:
     bare = MasterResume(name="Asha Rao")
     assert plain_letter(bare, "AI Engineer", "Gamma") == [
-        "I am applying for the AI Engineer role at Gamma.",
-        "I would welcome a conversation about how I can help your team.",
+        "I'd like to apply for the AI Engineer role at Gamma.",
+        "I'd be glad to talk about how I could help the team at Gamma. Thank you for your time.",
     ]
 
 
@@ -353,7 +411,9 @@ def test_resume_pdf_is_readable_by_a_tracking_system() -> None:
     assert ats_problems(pdf, master()) == []
     text, pages = pdf_text(pdf)
     assert pages == 1
-    assert "Software Engineer, Acme Labs" in text
+    lines = [line.strip() for line in text.splitlines()]
+    title = next(i for i, line in enumerate(lines) if line.startswith("Software Engineer"))
+    assert lines[title + 1].startswith("Acme Labs")  # the employer right under the title, in reading order
 
 
 @pytest.mark.parametrize(

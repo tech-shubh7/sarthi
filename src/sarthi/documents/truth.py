@@ -35,10 +35,17 @@ _BANNED_PATTERNS: tuple[tuple[str, str], ...] = (
     ("resonate", r"\bresonat\w*\b"),
 )
 LEAK_PHRASES: tuple[str, ...] = (
-    "i am sorry", "i apologize", "as an ai", "language model", "here is the", "here's the", "below is the",
+    "i am sorry", "i apologize", "here is the", "here's the", "below is the",
     "as requested", "i have rewritten", "i have updated", "i have removed", "note:", "disclaimer:",
     "tailored resume", "[company]", "[company name]", "[your name]", "[name]", "{company}", "lorem ipsum",
 )  # fmt: skip
+# An AI talking about itself ("As an AI language model, I..."), not an AI engineer: "as an AI Engineer" and
+# "built apps on large language models" are what an AI engineer's own resume says.
+_AI_SELF = re.compile(
+    r"\b(?:as an ai|i am an ai|i'm an ai|as an? (?:large )?language model|i am a (?:large )?language model)\b"
+    r"(?!\s*(?:/|-|&|and\b)?\s*(?:engineer|developer|scientist|researcher|specialist|architect|intern|lead|"
+    r"product|consultant|practitioner|ml\b|team|role|position))"
+)
 
 
 def figure_key(figure: str) -> str:
@@ -70,6 +77,8 @@ def style_problems(text: str) -> list[str]:
     problems = [f'uses "{p}"' for p in BANNED_PHRASES if re.search(rf"\b{re.escape(p)}\b", lower)]
     problems += [f'uses "{label}"' for label, pattern in _BANNED_PATTERNS if re.search(pattern, lower)]
     problems += [f'contains "{p}"' for p in LEAK_PHRASES if p in lower]
+    if found := _AI_SELF.search(lower):
+        problems.append(f'contains "{found.group(0)}"')
     if "—" in (text or ""):
         problems.append("uses an em dash")
     return problems

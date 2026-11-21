@@ -142,9 +142,13 @@ async def test_a_busy_ai_is_waited_for_until_the_last_try(
     answers = good_answers() | {"cover_letter": None}
     job_id = saved(job_store)
     make = maker(job_store, documents, queue, tmp_path, FakeAi(answers), profile())
-    with pytest.raises(RetryableError) as caught:
-        await make.handle(TaskRecord(1, names.DOCUMENTS, job_id, {}, 1))
-    assert caught.value.retry_after == 90.0
+    waits = []
+    for attempt in range(1, LAST_TRY):
+        with pytest.raises(RetryableError) as caught:
+            await make.handle(TaskRecord(1, names.DOCUMENTS, job_id, {}, attempt))
+        waits.append(caught.value.retry_after)
+    # Longer each time (a free tier's minute, then its day, resets): not five tries in a few minutes.
+    assert waits == [90.0, 360.0, 1440.0, 5760.0]
     await make.handle(TaskRecord(1, names.DOCUMENTS, job_id, {}, LAST_TRY))
     record = documents.get(job_id)
     assert record is not None
