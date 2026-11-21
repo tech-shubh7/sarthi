@@ -631,7 +631,7 @@ _SENIORITY = [
     ),
     (
         "junior",
-        r"\b(?:intern|junior|jr\.?|entry[- ]level|graduate|new grad|trainee|fresher|associate)(?=\W|$)|"
+        r"\b(?:intern|junior|jr\.?|entry[- ]level|graduate|new grad|trainee|fresher|associate|assoc\.?)(?=\W|$)|"
         + _LEVELLED
         + r"(?:i|1)\b(?!\.)",
     ),

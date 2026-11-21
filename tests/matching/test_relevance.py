@@ -71,6 +71,9 @@ async def verdict(title: str, description: str = DESCRIPTION, **job: Any) -> tup
         ("Software Engineer I", "junior"),
         ("SDE-1", "junior"),
         ("Associate Software Developer", "junior"),
+        ("Assoc Software Engineer II", "junior"),
+        ("Assoc. Data Analyst", "junior"),
+        ("Software Engineering Manager", "manager"),
         ("Associate Director, Engineering", "manager"),
         ("Backend Engineer", None),
         ("AI Engineer", None),
@@ -102,10 +105,43 @@ async def test_senior_titles_are_hidden_for_one_year(title: str) -> None:
     assert "level role; you have 1" in why
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Real titles a 1-year developer was sent (2026-11-21): "II" roles ask for 2-3 years.
+        "Software Engineer II",
+        "Software Development Engineer II - Machine Learning",
+        "Applied AI Engineer II",
+        "ML Engineer II",
+        "Software Engineer 2, Managed Gateways",
+        "SDE 2",
+        # Managing other engineers is a level, for someone who does not target manager roles.
+        "Software Engineering Manager",
+        "Senior Engineering Manager - AI & Python",
+        "Full Stack Developer, Backend-First (Director / Senior Director / AVP Technology)",
+        "AI Engineer – Team Lead / Manager (AI Transformation & Automation)",
+    ],
+)
+async def test_mid_level_and_manager_titles_are_hidden_for_one_year(title: str) -> None:
+    decision, why = await verdict(title)
+    assert decision is Decision.HIDE, (title, why)
+    assert "level role; you have 1" in why
+
+
 async def test_levels_within_reach_are_kept() -> None:
-    for title in ("Software Engineer II", "Associate AI Engineer", "Backend Engineer", "SDE-1"):
+    for title in ("Associate AI Engineer", "Assoc Software Engineer II", "Backend Engineer", "SDE-1"):
         decision, why = await verdict(title)
         assert decision is not Decision.HIDE, (title, why)
+
+
+def test_mid_level_is_fine_from_two_years() -> None:
+    assert check_rules(make_job(title="Software Engineer II"), make_profile(years_experience=2)).eligible
+    assert not check_rules(make_job(title="Software Engineer II"), make_profile(years_experience=1)).eligible
+
+
+def test_manager_titles_are_kept_for_people_who_want_them() -> None:
+    profile = make_profile(roles=["Engineering Manager"], years_experience=1)
+    assert check_rules(make_job(title="Software Engineering Manager"), profile).eligible
 
 
 def test_tolerance_is_tighter_early_in_a_career() -> None:
@@ -268,7 +304,7 @@ async def test_an_unrelated_title_with_few_skills_is_hidden() -> None:
 
 
 async def test_skills_alone_never_make_an_instant_alert() -> None:
-    result = await evaluate(make_job(title="Engineer II, SVT", description=DESCRIPTION * 3), junior(), NOW)
+    result = await evaluate(make_job(title="Engineer, SVT", description=DESCRIPTION * 3), junior(), NOW)
     assert result.decision is Decision.DIGEST
 
 

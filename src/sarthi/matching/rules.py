@@ -110,6 +110,9 @@ _OTHER_FAMILIES: dict[str, str] = {
 }
 
 
+_MANAGES = re.compile(r"\b(?:manager|head|director|lead|vp)\b", re.I)
+
+
 def _check_family(job: JobPosting, profile: Profile, verdict: _Verdict) -> None:
     wanted = " | ".join(profile.preferences.roles).lower()
     for family, pattern in _OTHER_FAMILIES.items():
@@ -133,6 +136,8 @@ def _check_job_terms(job: JobPosting, profile: Profile, verdict: _Verdict) -> No
     if years is None:
         return
     level = seniority_of(job.title)
+    if level == "manager" and any(_MANAGES.search(role) for role in prefs.roles):
+        level = None  # the user wants manager roles: "manager" names the job, not a level above them
     level_years = LEVEL_MIN_YEARS.get(level or "")
     if level_years is not None and level_years > years + years_tolerance(years):
         verdict.blockers.append(

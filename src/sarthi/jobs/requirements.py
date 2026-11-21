@@ -42,9 +42,10 @@ def min_years_required(text: str) -> int | None:
 # A job asking a little more than the user has is still worth showing: 1 year early in a career (1 year of
 # experience vs "3+ years" is not a fit), 2 years later on.
 EARLY_CAREER_YEARS = 3
-# Typical minimum years for a level stated in a title ("Senior", "SDE III", "Staff"). "Manager" is not gated:
-# it is a role type as often as a level ("Product Manager").
-LEVEL_MIN_YEARS: dict[str, int] = {"senior": 4, "lead": 6, "principal": 8}
+# Typical minimum years for a level stated in a title ("SDE II", "Senior", "SDE III", "Staff", "Engineering
+# Manager"). "II" asks for 2-3 years, so with the early-career slack it shows from 2 years. "Manager" is gated
+# only for people who do not target manager roles themselves ("Product Manager" is a role, not a level).
+LEVEL_MIN_YEARS: dict[str, int] = {"mid": 3, "senior": 4, "lead": 6, "manager": 6, "principal": 8}
 
 
 def years_tolerance(years: float) -> int:

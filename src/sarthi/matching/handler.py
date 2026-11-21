@@ -23,7 +23,8 @@ WAIT_FOR_PROFILE_S = 3600
 CHAT_FIRST_WAIT_S = 20  # the user's own messages use the (local) AI first
 # Raised whenever the matching rules change meaning, so stored results (and alerts queued from them) are
 # recognised as out of date and redone.
-LOGIC_VERSION = "3"  # 3: a job the AI could not read is never an instant alert
+# 3: a job the AI could not read is never an instant alert. 4: "II" and manager titles are levels too.
+LOGIC_VERSION = "4"
 
 
 def match_version(profile: Profile) -> str:
