@@ -31,6 +31,7 @@ def test_settings_read_prefixed_env(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 _TELEGRAM = "123456789:" + "AA" + "x" * 33
 _OPENAI = "sk-" + "t" * 24
 _GOOGLE = "AIza" + "y" * 35
+_GROQ = "gsk" + "_" + "z" * 52
 
 
 @pytest.mark.parametrize(
@@ -41,6 +42,7 @@ _GOOGLE = "AIza" + "y" * 35
         ("Authorization: Bearer abc.def.ghijklmnop", "abc.def.ghijklmnop"),
         ("password: hunter2!", "hunter2!"),
         (_GOOGLE, _GOOGLE),
+        (f"Invalid API Key: {_GROQ}", _GROQ),
     ],
 )
 def test_redact_masks_secrets(raw: str, leaked: str) -> None:
@@ -56,3 +58,15 @@ def test_filter_redacts_formatted_args() -> None:
     record = logging.LogRecord("t", logging.INFO, __file__, 1, "using %s", ("password=abc123",), None)
     RedactingFilter().filter(record)
     assert "abc123" not in record.getMessage()
+
+
+def test_a_log_call_with_mismatched_arguments_never_breaks_the_caller() -> None:
+    # A real failure: "keywords %d%%" given None made a document task fail all its attempts.
+    record = logging.LogRecord(
+        "t", logging.INFO, __file__, 1, "keywords %d%% token=%s", (None, "s3cret"), None
+    )
+    assert RedactingFilter().filter(record)
+    message = record.getMessage()
+    assert "keywords" in message
+    assert "None" in message
+    assert "s3cret" not in message  # still redacted

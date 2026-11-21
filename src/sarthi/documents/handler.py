@@ -201,7 +201,12 @@ class DocumentMaker:
                 report=report,
             )
         )
-        log.info("documents for %s at %s: keywords %d%%", job.title, job.company, keywords.score)
+        log.info(
+            "documents for %s at %s: keywords %s",
+            job.title,
+            job.company,
+            "none listed" if keywords.score is None else f"{keywords.score}%",
+        )
         return report
 
     async def _claims(self, master: MasterResume, text: str, last_try: bool) -> list[str]:
