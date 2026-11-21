@@ -18,6 +18,8 @@ profile.json
 resume*.*
 # ...except Sarthi's own resume template (code, not anyone's resume)
 !src/sarthi/documents/templates/resume.typ
+!src/sarthi/ai/resume.py
+!src/sarthi/profile/resume.py
 *.pdf
 *.docx
 *.bundle
