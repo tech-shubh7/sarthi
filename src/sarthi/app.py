@@ -243,10 +243,11 @@ def _ai(
     conn: sqlite3.Connection,
     clock: Clock,
     *,
-    cloud_only: bool = False,
+    background: bool = False,
 ) -> AiClient:
+    """A client for ``models``; a ``background`` one uses no local model and gives way to the user's calls."""
     endpoints = resolve(models, settings)
-    if cloud_only:
+    if background:
         endpoints = [endpoint for endpoint in endpoints if not endpoint.free]
     return AiClient(
         endpoints,
@@ -254,6 +255,7 @@ def _ai(
         daily_token_budget=settings.llm_daily_token_budget,
         requests_per_minute=settings.llm_requests_per_minute,
         clock=clock,
+        background=background,
     )
 
 
@@ -281,8 +283,9 @@ def build(settings: Settings, clock: Clock = utcnow) -> App:
         _ai(settings, settings.llm_quality_models, conn, clock),
     )
     # Matching scores every new job, thousands a day: a local model doing that keeps a laptop CPU at full
-    # load. It gets only the cloud fast models; with none answering, jobs get the free score instead.
-    matching_ai = _ai(settings, settings.llm_fast_models, conn, clock, cloud_only=True)
+    # load, and on a free cloud tier it would use up the limits the user's documents need. It gets only the
+    # cloud fast models, behind the user's calls; with none answering, jobs get the free score instead.
+    matching_ai = _ai(settings, settings.llm_fast_models, conn, clock, background=True)
     path = profile_path(settings.data_dir)
     repair_saved_profile(path)
 

@@ -255,6 +255,10 @@ the user's own facts, never an AI; at most 2, from 10 days, none after 60 days o
   (`job_text`, 12k chars) so the AI judges the whole posting, not the snippet.
 - Matching never uses a local model, even when one is in the fast list: scoring thousands of jobs on a laptop
   CPU keeps it at full load. It uses only the cloud fast models, and the free score when none answers.
+- Cloud rate limits (`ai/limits.py`): free tiers are small (Groq: 8,000 tokens a minute, 1,000 requests a day
+  per model). The client reads the provider's `x-ratelimit-*` headers, waits for the minute to reset instead of
+  sending calls that would be refused, lets matching wait while the user's documents or chat use the model, and
+  stops matching when 150 of the day's requests are left, so the user's work never runs dry.
 - **Implemented:** `ai/providers.py`, `ai/client.py`, `ai/prompts.py` (fenced untrusted data),
   `ai/privacy.py` (emails, phones, links removed from the resume), `ai/scoring.py` (L2 of the match funnel).
 

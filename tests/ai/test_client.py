@@ -8,9 +8,11 @@ import pytest
 from pydantic import BaseModel, SecretStr
 
 from sarthi.ai.client import AiClient, AiUnavailableError, BudgetExhaustedError
+from sarthi.ai.limits import RateLimits
 from sarthi.ai.prompts import Prompt
 from sarthi.ai.providers import Endpoint
 from sarthi.db.ai_store import AiStore
+from tests.ai.test_limits import FakeTime
 from tests.conftest import FakeClock
 
 PROMPT = Prompt("test", "1", "Say hi.")
@@ -208,3 +210,106 @@ async def test_background_work_waits_longer_for_a_fast_model(
     result = await client(store, providers, [GEMINI, OLLAMA], clock).structured(PROMPT, Answer, urgent=urgent)
     assert result.greeting == ("fast" if waited else "local")
     assert (30.0 in sleeps) is waited
+
+
+def limited_client(
+    store: AiStore,
+    providers: FakeProviders,
+    endpoints: list[Endpoint],
+    clock: FakeClock,
+    limits: RateLimits,
+    *,
+    background: bool = False,
+) -> AiClient:
+    http = httpx.AsyncClient(transport=httpx.MockTransport(providers))
+    return AiClient(
+        endpoints,
+        store,
+        requests_per_minute=6000,
+        http=http,
+        clock=clock,
+        background=background,
+        limits=limits,
+    )
+
+
+def with_limits(response: httpx.Response, tokens: int, requests: int = 900) -> httpx.Response:
+    response.headers.update(
+        {
+            "x-ratelimit-remaining-tokens": str(tokens),
+            "x-ratelimit-reset-tokens": "40s",
+            "x-ratelimit-remaining-requests": str(requests),
+            "x-ratelimit-reset-requests": "20m",
+        }
+    )
+    return response
+
+
+async def test_a_refused_call_says_why(
+    store: AiStore, clock: FakeClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    refused = httpx.Response(
+        400, json={"error": {"message": "Failed to generate JSON. Please adjust your prompt."}}
+    )
+    providers = FakeProviders({"gemini.test": [refused]})
+    with pytest.raises(AiUnavailableError):
+        await client(store, providers, [GEMINI], clock).structured(PROMPT, Answer)
+    assert "HTTP 400 (rejected): Failed to generate JSON" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        (400, {"error": {"message": "key secret-gemini-key has no access to this model"}}),
+        (401, {"error": {"message": "Invalid API Key"}}),
+        (403, {"error": "forbidden for secret-gemini-key"}),
+        (429, {"error": ["not", "a", "dict"]}),
+        (500, ["odd", "body"]),
+    ],
+)
+async def test_provider_messages_never_log_the_key(
+    store: AiStore, clock: FakeClock, caplog: pytest.LogCaptureFixture, status: int, body: Any
+) -> None:
+    providers = FakeProviders({"gemini.test": [httpx.Response(status, json=body)]})
+    with pytest.raises(AiUnavailableError):
+        await client(store, providers, [GEMINI], clock).structured(PROMPT, Answer)
+    assert f"HTTP {status}" in caplog.text
+    assert "secret-gemini-key" not in caplog.text
+
+
+async def test_a_full_minute_is_waited_out_instead_of_refused(store: AiStore, clock: FakeClock) -> None:
+    time = FakeTime()
+    limits = RateLimits(time, time.sleep)
+    providers = FakeProviders(
+        {
+            "gemini.test": [
+                with_limits(reply('{"greeting": "one", "count": 1}'), tokens=100),
+                reply('{"greeting": "two", "count": 2}'),
+            ]
+        }
+    )
+    ai = limited_client(store, providers, [GEMINI], clock, limits)
+    assert (await ai.structured(PROMPT, Answer, job_posting="a")).greeting == "one"
+    assert (await ai.structured(PROMPT, Answer, job_posting="b")).greeting == "two"
+    assert time.slept == [pytest.approx(40.0)]  # waited for the window instead of being refused
+    assert len(providers.requests) == 2
+
+
+async def test_background_work_leaves_the_last_requests_to_the_user(store: AiStore, clock: FakeClock) -> None:
+    time = FakeTime()
+    limits = RateLimits(time, time.sleep)
+    providers = FakeProviders(
+        {
+            "gemini.test": [
+                with_limits(reply('{"greeting": "user", "count": 1}'), tokens=7000, requests=100),
+                reply('{"greeting": "user again", "count": 2}'),
+            ]
+        }
+    )
+    user = limited_client(store, providers, [GEMINI], clock, limits)
+    scoring = limited_client(store, providers, [GEMINI], clock, limits, background=True)
+    assert (await user.structured(PROMPT, Answer, job_posting="a")).greeting == "user"
+    with pytest.raises(AiUnavailableError):
+        await scoring.structured(PROMPT, Answer, job_posting="b")  # only the reserve is left
+    assert (await user.structured(PROMPT, Answer, job_posting="c")).greeting == "user again"
+    assert len(providers.requests) == 2  # the background call never reached the provider

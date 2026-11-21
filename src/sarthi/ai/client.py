@@ -21,6 +21,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from sarthi.ai.gate import local_gate
+from sarthi.ai.limits import RATE_LIMITS, RateLimits, estimate_tokens
 from sarthi.ai.prompts import SYSTEM_RULES, Prompt
 from sarthi.ai.providers import FREE_PROVIDERS, Endpoint
 from sarthi.clock import Clock, to_iso, utcnow
@@ -33,10 +34,12 @@ T = TypeVar("T", bound=BaseModel)
 REQUEST_TIMEOUT_S = 90.0
 LOCAL_TIMEOUT_S = 600.0  # a local model on a laptop CPU can take minutes for one answer
 MAX_ERROR_CHARS = 800
+MAX_PROVIDER_MESSAGE = 200
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 _HTTP_OK = 200
 _SERVER_ERROR = 500
 _RETRY_STATUSES = frozenset({408, 409, 429})
+_LOGIN_FAILED = frozenset({401, 403})
 
 
 class AiError(Exception):
@@ -83,6 +86,24 @@ def _retry_after(response: httpx.Response, limit: float = MAX_RETRY_WAIT_S) -> f
     return seconds if 0 <= seconds <= limit else None
 
 
+def _provider_message(response: httpx.Response, endpoint: Endpoint) -> str:
+    """The provider's short explanation of a refused call (e.g. which limit was hit), safe to log.
+
+    Login failures say nothing (their text may quote the key); the key is removed from any other message.
+    """
+    if response.status_code in _LOGIN_FAILED:
+        return ""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    error = body.get("error") if isinstance(body, dict) else None
+    message = str((error.get("message") if isinstance(error, dict) else error) or "")
+    if endpoint.api_key is not None and (key := endpoint.api_key.get_secret_value()):
+        message = message.replace(key, "[key]")
+    return message[:MAX_PROVIDER_MESSAGE]
+
+
 class _CallFailedError(Exception):
     """One endpoint failed; try the next."""
 
@@ -99,9 +120,16 @@ class AiClient:
         requests_per_minute: int = 30,
         http: httpx.AsyncClient | None = None,
         clock: Clock = utcnow,
+        background: bool = False,
+        limits: RateLimits = RATE_LIMITS,
     ) -> None:
-        """Try ``endpoints`` in order. ``daily_token_budget`` 0 means no limit."""
+        """Try ``endpoints`` in order. ``daily_token_budget`` 0 means no limit.
+
+        A ``background`` client (job scoring) gives way to the user's calls within a provider's rate limits.
+        """
         self.endpoints = tuple(endpoints)
+        self._background = background
+        self._limits = limits
         self._store = store
         self._budget = daily_token_budget
         self._interval = 60.0 / requests_per_minute
@@ -149,7 +177,17 @@ class AiClient:
                     async with local_gate(endpoint.base_url).hold(urgent=urgent):
                         result = await self._ask(endpoint, text, schema, urgent=urgent)
                 else:
-                    result = await self._ask(endpoint, text, schema, urgent=urgent)
+                    window = self._limits.window(endpoint.label)
+                    with window.user_call(active=not self._background):
+                        admitted = await window.admit(
+                            estimate_tokens(len(SYSTEM_RULES) + len(text)),
+                            background=self._background,
+                            max_wait=MAX_RETRY_WAIT_S if urgent else MAX_BACKGROUND_WAIT_S,
+                        )
+                        if not admitted:
+                            log.info("AI model %s skipped: its rate limit is used up for now", endpoint.label)
+                            continue
+                        result = await self._ask(endpoint, text, schema, urgent=urgent)
             except _CallFailedError as error:
                 log.warning("AI model %s failed: %s", endpoint.label, error)
                 continue
@@ -199,7 +237,7 @@ class AiClient:
         self, endpoint: Endpoint, body: dict[str, Any], headers: dict[str, str]
     ) -> httpx.Response:
         try:
-            return await self._http.post(
+            response = await self._http.post(
                 f"{endpoint.base_url}/chat/completions",
                 json=body,
                 headers=headers,
@@ -207,6 +245,9 @@ class AiClient:
             )
         except httpx.HTTPError as error:
             raise _CallFailedError(type(error).__name__) from error
+        if not endpoint.free:
+            self._limits.window(endpoint.label).update(response.headers)
+        return response
 
     async def _call(self, endpoint: Endpoint, messages: list[dict[str, str]], *, urgent: bool = False) -> str:
         await self._pace()
@@ -230,7 +271,10 @@ class AiClient:
                 if response.status_code >= _SERVER_ERROR or response.status_code in _RETRY_STATUSES
                 else "rejected"
             )
-            raise _CallFailedError(f"HTTP {response.status_code} ({kind})")
+            detail = _provider_message(response, endpoint)
+            raise _CallFailedError(
+                f"HTTP {response.status_code} ({kind})" + (f": {detail}" if detail else "")
+            )
         try:
             payload = response.json()
             content = payload["choices"][0]["message"]["content"] or ""
