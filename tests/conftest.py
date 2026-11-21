@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from sarthi.ai.limits import RATE_LIMITS
 from sarthi.db.connection import connect
 from sarthi.db.jobs import JobStore
 from sarthi.db.tasks import TaskStore
@@ -33,6 +34,12 @@ def no_real_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         if name.startswith("SARTHI_"):
             monkeypatch.delenv(name)
     monkeypatch.chdir(Path(__file__).parent)
+
+
+@pytest.fixture(autouse=True)
+def fresh_rate_limits() -> None:
+    """Every test starts with no remembered provider limits (one test's refusal must not block the next)."""
+    RATE_LIMITS._windows.clear()
 
 
 @pytest.fixture

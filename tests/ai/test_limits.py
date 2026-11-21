@@ -2,7 +2,14 @@ import asyncio
 
 import pytest
 
-from sarthi.ai.limits import REQUEST_RESERVE, RateLimits, RateWindow, estimate_tokens, parse_duration
+from sarthi.ai.limits import (
+    REQUEST_RESERVE,
+    RateLimits,
+    RateWindow,
+    estimate_tokens,
+    parse_duration,
+    retry_seconds,
+)
 
 
 class FakeTime:
@@ -52,6 +59,38 @@ GROQ_HEADERS = {
 def test_reset_durations(text: str, seconds: float | None) -> None:
     result = parse_duration(text)
     assert result == pytest.approx(seconds) if seconds is not None else result is None
+
+
+@pytest.mark.parametrize(
+    ("headers", "message", "seconds"),
+    [
+        ({"retry-after": "30"}, "", 30.0),
+        ({"retry-after": "30"}, "Please try again in 9m14.5s.", 30.0),  # the header wins
+        ({}, "Used 199616, Requested 1714. Please try again in 9m14.592s. Need more tokens?", 554.592),
+        ({"retry-after": "soon"}, "please TRY AGAIN IN 2h", 7200.0),
+        ({"retry-after": "-5"}, "", None),
+        ({}, "Rate limit reached.", None),
+        ({}, "try again in a while", None),
+    ],
+)
+def test_how_long_a_refusal_says_to_wait(
+    headers: dict[str, str], message: str, seconds: float | None
+) -> None:
+    result = retry_seconds(headers, message)
+    assert result == pytest.approx(seconds) if seconds is not None else result is None
+
+
+async def test_after_a_refusal_the_model_is_left_alone_until_it_resets() -> None:
+    time = FakeTime()
+    w = window(time)
+    w.refused(600)
+    assert not await w.admit(10, background=False, max_wait=60)  # no call: the provider said wait
+    assert time.slept == []
+    assert await w.admit(10, background=True, max_wait=601)  # a patient caller waits it out
+    assert time.slept == [pytest.approx(600)]
+    w.refused(5)
+    w.refused(1)  # a shorter wait never cuts a longer one short
+    assert w.blocked_until == pytest.approx(time.now + 5)
 
 
 def test_estimate_counts_the_prompt_and_an_answer() -> None:

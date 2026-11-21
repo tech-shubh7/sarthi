@@ -21,7 +21,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from sarthi.ai.gate import local_gate
-from sarthi.ai.limits import RATE_LIMITS, RateLimits, estimate_tokens
+from sarthi.ai.limits import RATE_LIMITS, RateLimits, estimate_tokens, retry_seconds
 from sarthi.ai.prompts import SYSTEM_RULES, Prompt
 from sarthi.ai.providers import FREE_PROVIDERS, Endpoint
 from sarthi.clock import Clock, to_iso, utcnow
@@ -101,7 +101,7 @@ def _provider_message(response: httpx.Response, endpoint: Endpoint) -> str:
     message = str((error.get("message") if isinstance(error, dict) else error) or "")
     if endpoint.api_key is not None and (key := endpoint.api_key.get_secret_value()):
         message = message.replace(key, "[key]")
-    return message[:MAX_PROVIDER_MESSAGE]
+    return message
 
 
 class _CallFailedError(Exception):
@@ -271,7 +271,14 @@ class AiClient:
                 if response.status_code >= _SERVER_ERROR or response.status_code in _RETRY_STATUSES
                 else "rejected"
             )
-            detail = _provider_message(response, endpoint)
+            message = _provider_message(response, endpoint)
+            if (
+                response.status_code == _TOO_MANY_REQUESTS
+                and not endpoint.free
+                and (wait := retry_seconds(response.headers, message)) is not None
+            ):
+                self._limits.window(endpoint.label).refused(wait)  # e.g. the day's tokens: stop asking
+            detail = message[:MAX_PROVIDER_MESSAGE]
             raise _CallFailedError(
                 f"HTTP {response.status_code} ({kind})" + (f": {detail}" if detail else "")
             )

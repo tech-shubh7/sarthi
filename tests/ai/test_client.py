@@ -65,7 +65,13 @@ def client(
 ) -> AiClient:
     http = httpx.AsyncClient(transport=httpx.MockTransport(providers))
     return AiClient(
-        endpoints, store, daily_token_budget=budget, requests_per_minute=6000, http=http, clock=clock
+        endpoints,
+        store,
+        daily_token_budget=budget,
+        requests_per_minute=6000,
+        http=http,
+        clock=clock,
+        limits=RateLimits(),  # its own: a refusal in one test must not block a model in the next
     )
 
 
@@ -275,6 +281,34 @@ async def test_provider_messages_never_log_the_key(
         await client(store, providers, [GEMINI], clock).structured(PROMPT, Answer)
     assert f"HTTP {status}" in caplog.text
     assert "secret-gemini-key" not in caplog.text
+
+
+async def test_a_used_up_day_stops_further_calls_to_that_model(
+    store: AiStore, clock: FakeClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Groq's real wording: the wait comes after the first 200 characters, which the log line cuts off.
+    day_used_up = httpx.Response(
+        429,
+        json={
+            "error": {
+                "message": "Rate limit reached for model `openai/gpt-oss-20b` in organization `org_0123456789"
+                "abcdefghijklmnop` service tier `on_demand` on tokens per day (TPD): Limit 200000, Used 199616,"
+                " Requested 1714. Please try again in 9m14.592s. Need more tokens? Upgrade to Dev Tier today."
+            }
+        },
+    )
+    time = FakeTime()
+    limits = RateLimits(time, time.sleep)
+    providers = FakeProviders(
+        {"gemini.test": [day_used_up], "openai.test": [reply('{"greeting": "a", "count": 1}')] * 2}
+    )
+    ai = limited_client(store, providers, [GEMINI, OPENAI], clock, limits, background=True)
+    assert (await ai.structured(PROMPT, Answer, job_posting="a")).greeting == "a"
+    assert (await ai.structured(PROMPT, Answer, job_posting="b")).greeting == "a"
+    hosts = [r.url.host for r in providers.requests]
+    assert hosts == ["gemini.test", "openai.test", "openai.test"]  # the used-up model was not asked again
+    assert "tokens per day (TPD)" in caplog.text
+    assert limits.window(GEMINI.label).blocked_until == pytest.approx(time.now + 554.592)
 
 
 async def test_a_full_minute_is_waited_out_instead_of_refused(store: AiStore, clock: FakeClock) -> None:

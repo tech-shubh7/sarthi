@@ -88,6 +88,34 @@ async def test_stop_waits_for_in_flight(queue: TaskQueue, task_store: TaskStore)
     assert task_store.task_counts()[TaskStatus.DONE] == 1
 
 
+async def test_cancelling_the_worker_hands_running_tasks_back(
+    queue: TaskQueue, task_store: TaskStore
+) -> None:
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def stuck(task: TaskRecord) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()  # e.g. waiting on an AI provider
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    queue.enqueue("fetch", "k")
+    worker = Worker(queue, {"fetch": stuck}, poll_interval=0.01)
+    runner = asyncio.create_task(worker.run())
+    await started.wait()
+    await asyncio.sleep(0.03)  # the loop is back waiting for work, not on the handler
+    runner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+    # Shutdown closes the database next: by now the handler has stopped and the task is back in the queue,
+    # with no attempt used up.
+    assert cancelled.is_set()
+    counts = task_store.task_counts()
+    assert (counts[TaskStatus.RUNNING], counts[TaskStatus.PENDING], counts[TaskStatus.FAILED]) == (0, 1, 0)
+
+
 async def test_wake_skips_the_poll_wait(queue: TaskQueue, task_store: TaskStore) -> None:
     done = asyncio.Event()
 

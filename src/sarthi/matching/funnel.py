@@ -63,7 +63,8 @@ async def evaluate(
     free_score = _clamp(free.score + rules.location_points)
     reasons = free.reasons
     ai_verdict: AiScore | None = None
-    if ai is not None and free_score >= thresholds.ai_from:
+    ai_wanted = ai is not None and ai.available and free_score >= thresholds.ai_from
+    if ai is not None and ai_wanted:
         ai_verdict = await ai.score(job, profile)
 
     if ai_verdict is not None and ai_verdict.blocker is not None:
@@ -80,4 +81,8 @@ async def evaluate(
     outcome = decide(rules, score, thresholds, confidence)
     if outcome.decision is Decision.ALERT and free.title_share == 0:
         outcome = Outcome(Decision.DIGEST, "skills_only")  # instant alerts are for the user's own roles
+    elif outcome.decision is Decision.ALERT and ai_wanted and ai_verdict is None:
+        # The AI is set up but could not read the full posting now (limit reached, provider down): years
+        # asked, level and must-have skills are unchecked, so the job waits for the digest, not the phone.
+        outcome = Outcome(Decision.DIGEST, "unchecked")
     return MatchResult(score, outcome, reasons[:MAX_REASONS], rules.notes, ai_used=ai_verdict is not None)

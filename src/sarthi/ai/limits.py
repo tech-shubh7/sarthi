@@ -22,6 +22,7 @@ COMPLETION_ALLOWANCE = 700  # tokens an answer usually takes (reasoning models t
 CHARS_PER_TOKEN = 4
 YIELD_STEP_S = 2.0  # how often waiting background work looks again
 _DURATION = re.compile(r"(?P<value>\d+(?:\.\d+)?)(?P<unit>ms|h|m|s)")
+_TRY_AGAIN = re.compile(r"try again in ((?:\d+(?:\.\d+)?(?:ms|h|m|s))+)", re.IGNORECASE)
 _SECONDS = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0}
 
 Monotonic = Callable[[], float]
@@ -35,6 +36,19 @@ def parse_duration(text: str) -> float | None:
     if not parts or "".join(p.group(0) for p in parts) != text:
         return None
     return sum(float(p["value"]) * _SECONDS[p["unit"]] for p in parts)
+
+
+def retry_seconds(headers: Mapping[str, str], message: str) -> float | None:
+    """How long a refused call says to wait: the ``retry-after`` header, else "try again in 7m12s" text."""
+    try:
+        seconds = float(headers.get("retry-after", ""))
+    except ValueError:
+        pass
+    else:
+        if seconds >= 0:
+            return seconds
+    found = _TRY_AGAIN.search(message)
+    return parse_duration(found.group(1)) if found else None
 
 
 def estimate_tokens(prompt_chars: int) -> int:
@@ -59,7 +73,12 @@ class RateWindow:
     tokens_reset_at: float = 0.0
     requests_left: int | None = None
     requests_reset_at: float = 0.0
+    blocked_until: float = 0.0  # a refusal said to wait (e.g. the day's tokens are used up)
     user_calls: int = field(default=0)  # calls the user waits on, waiting or running
+
+    def refused(self, seconds: float) -> None:
+        """The provider refused a call and said to wait ``seconds``: no calls until then."""
+        self.blocked_until = max(self.blocked_until, self.clock() + seconds)
 
     def update(self, headers: Mapping[str, str]) -> None:
         """Take in a response's ``x-ratelimit-*`` headers (OpenAI and Groq style)."""
@@ -80,9 +99,10 @@ class RateWindow:
             self.requests_left = None
 
     def _token_wait(self, tokens: int, now: float) -> float:
+        blocked = max(0.0, self.blocked_until - now)
         if self.tokens_left is None or self.tokens_left >= tokens:
-            return 0.0
-        return max(0.0, self.tokens_reset_at - now)
+            return blocked
+        return max(blocked, self.tokens_reset_at - now)
 
     async def admit(self, tokens: int, *, background: bool, max_wait: float) -> bool:
         """Wait (at most ``max_wait`` seconds) until a call of ``tokens`` fits; False means use another model.

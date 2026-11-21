@@ -47,6 +47,11 @@ class AiScore:
 class AiScorer(Protocol):
     """Layer 2. Returns None when it cannot answer (no model set up, budget spent, provider down)."""
 
+    @property
+    def available(self) -> bool:
+        """True when a model is set up (it may still fail to answer right now)."""
+        ...
+
     async def score(self, job: JobPosting, profile: Profile) -> AiScore | None:
         """Judge how well ``job`` fits ``profile``."""
         ...
@@ -136,6 +141,11 @@ class LlmMatchScorer:
     def __init__(self, client: AiClient) -> None:
         """Ask ``client``'s models."""
         self._client = client
+
+    @property
+    def available(self) -> bool:
+        """True when the client has a model to ask."""
+        return self._client.available
 
     async def score(self, job: JobPosting, profile: Profile) -> AiScore | None:
         """The AI's verdict, or None when no model can answer right now."""

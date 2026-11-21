@@ -19,8 +19,9 @@ from tests.matching.conftest import NOW, make_job, make_profile
 
 
 class FakeAi:
-    def __init__(self, verdict: AiScore | None) -> None:
+    def __init__(self, verdict: AiScore | None, *, available: bool = True) -> None:
         self.verdict = verdict
+        self.available = available
         self.calls = 0
 
     async def score(self, job: JobPosting, profile: Profile) -> AiScore | None:
@@ -80,9 +81,17 @@ async def test_ai_score_blends_in_and_leads_the_reasons() -> None:
     assert result.decision is not Decision.ALERT
 
 
-async def test_unavailable_ai_falls_back_to_the_free_score() -> None:
+async def test_without_any_ai_the_free_score_decides() -> None:
+    ai = FakeAi(AiScore(10, 1.0), available=False)
+    result = await evaluate(make_job(), make_profile(), NOW, ai=ai)
+    assert (result.ai_used, result.decision, ai.calls) == (False, Decision.ALERT, 0)
+
+
+async def test_an_ai_that_cannot_answer_now_sends_the_job_to_the_digest() -> None:
+    # A real session: the day's AI limit ran out and every free-score match became an instant alert.
     result = await evaluate(make_job(), make_profile(), NOW, ai=FakeAi(None))
-    assert (result.ai_used, result.decision) == (False, Decision.ALERT)
+    assert (result.ai_used, result.decision, result.outcome.rule) == (False, Decision.DIGEST, "unchecked")
+    assert result.score >= Thresholds().alert_at  # the score is kept; only the interruption waits
 
 
 @pytest.fixture

@@ -56,24 +56,35 @@ class Worker:
         self._wake.set()
 
     async def run(self) -> None:
-        """Process tasks until ``stop()``; then wait for in-flight tasks to finish."""
+        """Process tasks until ``stop()``; then wait for in-flight tasks to finish.
+
+        Cancelling ``run`` cancels the in-flight tasks too and waits until each has handed its task back, so
+        nothing is still running when the caller closes the database and connections.
+        """
         slots = asyncio.Semaphore(self.concurrency)
         types = list(self.handlers)
-        while not self._stopping.is_set():
-            await slots.acquire()
-            task = None if self._stopping.is_set() else self.queue.claim(types)
-            if task is None:
-                slots.release()
-                self._wake.clear()
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self._wake.wait(), timeout=self.poll_interval)
-                continue
-            running = asyncio.create_task(self._run_one(task), name=f"{self.name}:{task.type}")
-            self._in_flight.add(running)
-            running.add_done_callback(self._in_flight.discard)
-            running.add_done_callback(lambda _: slots.release())
-        if self._in_flight:
-            await asyncio.gather(*self._in_flight, return_exceptions=True)
+        try:
+            while not self._stopping.is_set():
+                await slots.acquire()
+                task = None if self._stopping.is_set() else self.queue.claim(types)
+                if task is None:
+                    slots.release()
+                    self._wake.clear()
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(self._wake.wait(), timeout=self.poll_interval)
+                    continue
+                running = asyncio.create_task(self._run_one(task), name=f"{self.name}:{task.type}")
+                self._in_flight.add(running)
+                running.add_done_callback(self._in_flight.discard)
+                running.add_done_callback(lambda _: slots.release())
+            if self._in_flight:
+                await asyncio.gather(*self._in_flight, return_exceptions=True)
+        except asyncio.CancelledError:
+            in_flight = list(self._in_flight)
+            for running in in_flight:
+                running.cancel()
+            await asyncio.gather(*in_flight, return_exceptions=True)
+            raise
 
     async def _run_one(self, task: TaskRecord) -> None:
         where = f"{task.type}[{task.key}] attempt {task.attempts}"

@@ -258,7 +258,11 @@ the user's own facts, never an AI; at most 2, from 10 days, none after 60 days o
 - Cloud rate limits (`ai/limits.py`): free tiers are small (Groq: 8,000 tokens a minute, 1,000 requests a day
   per model). The client reads the provider's `x-ratelimit-*` headers, waits for the minute to reset instead of
   sending calls that would be refused, lets matching wait while the user's documents or chat use the model, and
-  stops matching when 150 of the day's requests are left, so the user's work never runs dry.
+  stops matching when 150 of the day's requests are left, so the user's work never runs dry. A refusal that says
+  "try again in 9m14s" (e.g. the day's tokens are used up) is remembered: that model is not asked until then.
+- When the AI is set up but cannot read a job right now, the job may still reach the daily digest, but never an
+  instant alert: its years, level and must-have skills are unchecked (``LOGIC_VERSION`` 3; found when Groq's
+  daily limit ran out and every free-score match became an alert).
 - **Implemented:** `ai/providers.py`, `ai/client.py`, `ai/prompts.py` (fenced untrusted data),
   `ai/privacy.py` (emails, phones, links removed from the resume), `ai/scoring.py` (L2 of the match funnel).
 
