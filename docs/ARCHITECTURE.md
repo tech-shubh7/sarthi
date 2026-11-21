@@ -253,6 +253,8 @@ the user's own facts, never an AI; at most 2, from 10 days, none after 60 days o
 - Two model slots: **fast** (matching) and **quality** (resume, cover letter, forms).
 - Daily budget counts **tokens** of paid providers (local Ollama is exempt); full job text is stored compressed
   (`job_text`, 12k chars) so the AI judges the whole posting, not the snippet.
+- Matching never uses a local model, even when one is in the fast list: scoring thousands of jobs on a laptop
+  CPU keeps it at full load. It uses only the cloud fast models, and the free score when none answers.
 - **Implemented:** `ai/providers.py`, `ai/client.py`, `ai/prompts.py` (fenced untrusted data),
   `ai/privacy.py` (emails, phones, links removed from the resume), `ai/scoring.py` (L2 of the match funnel).
 

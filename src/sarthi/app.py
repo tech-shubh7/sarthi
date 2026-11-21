@@ -237,9 +237,19 @@ class App:
         self.conn.close()
 
 
-def _ai(settings: Settings, models: list[str], conn: sqlite3.Connection, clock: Clock) -> AiClient:
+def _ai(
+    settings: Settings,
+    models: list[str],
+    conn: sqlite3.Connection,
+    clock: Clock,
+    *,
+    cloud_only: bool = False,
+) -> AiClient:
+    endpoints = resolve(models, settings)
+    if cloud_only:
+        endpoints = [endpoint for endpoint in endpoints if not endpoint.free]
     return AiClient(
-        resolve(models, settings),
+        endpoints,
         AiStore(conn, clock=clock),
         daily_token_budget=settings.llm_daily_token_budget,
         requests_per_minute=settings.llm_requests_per_minute,
@@ -270,6 +280,9 @@ def build(settings: Settings, clock: Clock = utcnow) -> App:
         _ai(settings, settings.llm_fast_models, conn, clock),
         _ai(settings, settings.llm_quality_models, conn, clock),
     )
+    # Matching scores every new job, thousands a day: a local model doing that keeps a laptop CPU at full
+    # load. It gets only the cloud fast models; with none answering, jobs get the free score instead.
+    matching_ai = _ai(settings, settings.llm_fast_models, conn, clock, cloud_only=True)
     path = profile_path(settings.data_dir)
     repair_saved_profile(path)
 
@@ -303,7 +316,7 @@ def build(settings: Settings, clock: Clock = utcnow) -> App:
         return bot.inbox is not None and bot.inbox.busy
 
     matcher = Matcher(
-        jobs, matches, queue, profile, ai=LlmMatchScorer(fast), ai_paused=chat_busy, clock=clock
+        jobs, matches, queue, profile, ai=LlmMatchScorer(matching_ai), ai_paused=chat_busy, clock=clock
     )
     planned = plan_sources(
         settings.job_boards,
@@ -388,6 +401,6 @@ def build(settings: Settings, clock: Clock = utcnow) -> App:
         forms,
         applier,
         tracker,
-        (fast, quality),
+        (fast, quality, matching_ai),
         clock,
     )

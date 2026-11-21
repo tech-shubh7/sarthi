@@ -94,6 +94,37 @@ async def test_build_wires_the_worker_and_schedules_one_digest(tmp_path: Path, c
         sarthi.conn.close()
 
 
+async def test_matching_never_uses_a_local_model(tmp_path: Path, clock: FakeClock) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path,
+        telegram_bot_token=SecretStr("1:x"),
+        groq_api_key=SecretStr("k"),
+        llm_fast_models=["groq/fast-model", "ollama/qwen2.5:3b"],
+        llm_quality_models=[],
+    )
+    sarthi = build(settings, clock=clock)
+    try:
+        labels = [[e.label for e in client.endpoints] for client in sarthi.ai_clients]
+        assert ["groq/fast-model", "ollama/qwen2.5:3b"] in labels  # reply tracking may still use it
+        matching = sarthi.ai_clients[-1]
+        assert [e.label for e in matching.endpoints] == ["groq/fast-model"]  # cloud models only
+    finally:
+        await sarthi.bot.api.aclose()
+        for client in sarthi.ai_clients:
+            await client.aclose()
+        sarthi.conn.close()
+
+    only_local = build(settings.model_copy(update={"llm_fast_models": ["ollama/qwen2.5:3b"]}), clock=clock)
+    try:
+        assert not only_local.ai_clients[-1].available  # nothing to call: matching uses the free score
+    finally:
+        await only_local.bot.api.aclose()
+        for client in only_local.ai_clients:
+            await client.aclose()
+        only_local.conn.close()
+
+
 def test_pair_command_prints_a_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SARTHI_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
